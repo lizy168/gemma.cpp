@@ -208,6 +208,7 @@ class ReadVisitor : public VisitorBase {
     HWY_ASSERT(!end_.empty() && result_.pos <= end_.back());
     // Count extra, which indicates old code and new data.
     result_.extra_u32 += end_.back() - result_.pos;
+    result_.pos = end_.back();
     end_.pop_back();
   }
 

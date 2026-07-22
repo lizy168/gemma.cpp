@@ -105,6 +105,26 @@ struct ClampRange {
 
 // Per-layer weight metadata and pointers. The tensor data is owned by
 // `MatOwner`.
+//
+// Gemma 4 ViT layers use separate tensor names from the Gemma 3 ViT (kVit)
+// layers. VitCond remaps the generic layer tensor names (e.g. "pre_att_ns")
+// to Gemma-4-specific names (e.g. "vit_pr_att") so both can coexist in the
+// same LayerWeightsPtrs struct. For kVit layers the names pass through
+// unchanged.
+static inline std::string VitCond(const LayerConfig& config,
+                                  const std::string& name) {
+  if (config.type == LayerAttentionType::kVitGemma4) {
+    if (name == "pre_att_ns") return "vit_pr_att";
+    if (name == "post_att_ns") return "vit_po_att";
+    if (name == "pre_ff_ns") return "vit_pr_ff";
+    if (name == "post_ff_ns") return "vit_po_ff";
+    if (name == "gating_ein") return "vit_gate_ein";
+    if (name == "query_norm") return "vit_q_norm";
+    return "vit_" + name;
+  }
+  return name;
+}
+
 struct LayerWeightsPtrs {
   // Initializes tensor metadata without allocating.
   // NOTE: do not store layer_idx, TransformerLayer and Attention may use
@@ -113,9 +133,9 @@ struct LayerWeightsPtrs {
                    const TensorInfoRegistry& tensors)
       : layer_idx(layer_idx),
         finder_(LayerSuffix(layer_idx), tensors),
-        qkv_einsum_w(finder_("qkv_ein")),
-        qkv_einsum_w1(finder_("qkv1_w")),
-        qkv_einsum_w2(finder_("qkv2_w")),
+        qkv_einsum_w(finder_(VitCond(config, "qkv_ein"))),
+        qkv_einsum_w1(finder_(VitCond(config, "qkv1_w"))),
+        qkv_einsum_w2(finder_(VitCond(config, "qkv2_w"))),
         attention_output_biases(finder_("attn_ob")),
         // MultiHeadDotProductAttention.
         vit({.attn_out_w = finder_("attn_out_w"),
@@ -130,23 +150,23 @@ struct LayerWeightsPtrs {
              .layer_norm_0_scale = finder_("ln_0_scale"),
              .layer_norm_1_bias = finder_("ln_1_bias"),
              .layer_norm_1_scale = finder_("ln_1_scale")}),
-        gating_einsum_w(finder_("gating_ein")),
-        gating_einsum_w1(finder_("gating1_w")),
-        gating_einsum_w2(finder_("gating2_w")),
-        linear_w(finder_("linear_w")),
-        pre_attention_norm_scale(finder_("pre_att_ns")),
-        pre_ffw_norm_scale(finder_("pre_ff_ns")),
-        post_attention_norm_scale(finder_("post_att_ns")),
-        post_ffw_norm_scale(finder_("post_ff_ns")),
+        gating_einsum_w(finder_(VitCond(config, "gating_ein"))),
+        gating_einsum_w1(finder_(VitCond(config, "gating1_w"))),
+        gating_einsum_w2(finder_(VitCond(config, "gating2_w"))),
+        linear_w(finder_(VitCond(config, "linear_w"))),
+        pre_attention_norm_scale(finder_(VitCond(config, "pre_att_ns"))),
+        pre_ffw_norm_scale(finder_(VitCond(config, "pre_ff_ns"))),
+        post_attention_norm_scale(finder_(VitCond(config, "post_att_ns"))),
+        post_ffw_norm_scale(finder_(VitCond(config, "post_ff_ns"))),
         skip_scale(finder_("skip_scale")),
         ffw_gating_biases(finder_("ffw_gat_b")),
         ffw_output_biases(finder_("ffw_out_b")),
 
-        attn_vec_einsum_w(finder_("att_ein")),
-        att_weights(finder_("att_w")),
+        attn_vec_einsum_w(finder_(VitCond(config, "att_ein"))),
+        att_weights(finder_(VitCond(config, "att_w"))),
 
-        key_norm_scale(finder_("key_norm")),
-        query_norm_scale(finder_("query_norm")),
+        key_norm_scale(finder_(VitCond(config, "key_norm"))),
+        query_norm_scale(finder_(VitCond(config, "query_norm"))),
 
         router_scale(finder_("router_scale")),
         p_expert_sc(finder_("p_expert_sc")),
@@ -336,6 +356,23 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(vit.layer_norm_0_scale, kMustRead));
       func(TENSOR_ARGS(vit.layer_norm_1_bias, kMustRead));
       func(TENSOR_ARGS(vit.layer_norm_1_scale, kMustRead));
+      return;
+    }
+    if (layer_config.type == LayerAttentionType::kVitGemma4) {
+      func(TENSOR_ARGS(qkv_einsum_w1, kMustRead));
+      func(TENSOR_ARGS(qkv_einsum_w2, kMustRead));
+      func(TENSOR_ARGS(att_weights, kMaybeRead));
+      func(TENSOR_ARGS(attn_vec_einsum_w, kMaybeRead));
+      func(TENSOR_ARGS(gating_einsum_w, kMustRead));
+      func(TENSOR_ARGS(linear_w, kMustRead));
+      func(TENSOR_ARGS(pre_attention_norm_scale, kMustRead));
+      func(TENSOR_ARGS(post_attention_norm_scale, kMustRead));
+      func(TENSOR_ARGS(pre_ffw_norm_scale, kMustRead));
+      func(TENSOR_ARGS(post_ffw_norm_scale, kMustRead));
+      if (layer_config.use_qk_norm) {
+        func(TENSOR_ARGS(key_norm_scale, kMustRead));
+        func(TENSOR_ARGS(query_norm_scale, kMustRead));
+      }
       return;
     }
     if (layer_config.type == LayerAttentionType::kGemma) {
@@ -816,15 +853,34 @@ struct WeightsPtrs {
     }
 
     if (!config_.vit_config.layer_configs.empty()) {  // Vit parts.
-      func(TENSOR_ARGS(vit_encoder_norm_bias, kMustRead));
-      func(TENSOR_ARGS(vit_encoder_norm_scale, kMustRead));
-      func(TENSOR_ARGS(vit_img_embedding_bias, kMustRead));
+      // Gemma 4 ViT does not use encoder norm or embedding/head biases;
+      // mark them kMaybeRead so loading doesn't abort when absent.
+      if (config_.model == Model::GEMMA4_2B) {
+        func(TENSOR_ARGS(vit_encoder_norm_bias, kMaybeRead));
+        func(TENSOR_ARGS(vit_encoder_norm_scale, kMaybeRead));
+      } else {
+        func(TENSOR_ARGS(vit_encoder_norm_bias, kMustRead));
+        func(TENSOR_ARGS(vit_encoder_norm_scale, kMustRead));
+      }
+      if (config_.model == Model::GEMMA4_2B) {
+        func(TENSOR_ARGS(vit_img_embedding_bias, kMaybeRead));
+      } else {
+        func(TENSOR_ARGS(vit_img_embedding_bias, kMustRead));
+      }
       func(TENSOR_ARGS(vit_img_embedding_kernel, kMustRead));
       func(TENSOR_ARGS(vit_img_pos_embedding, kMustRead));
-      func(TENSOR_ARGS(vit_img_head_bias, kMustRead));
+      if (config_.model == Model::GEMMA4_2B) {
+        func(TENSOR_ARGS(vit_img_head_bias, kMaybeRead));
+      } else {
+        func(TENSOR_ARGS(vit_img_head_bias, kMustRead));
+      }
       func(TENSOR_ARGS(vit_img_head_kernel, kMustRead));
 
-      if (config_.wrapping == PromptWrapping::GEMMA_VLM) {
+      // RMS norm applied to soft tokens before projection. Used by all VLM
+      // models; kMaybeRead for Gemma 4 because its export path may omit it.
+      if (config_.model == Model::GEMMA4_2B) {
+        func(TENSOR_ARGS(mm_embed_norm, kMaybeRead));
+      } else {
         func(TENSOR_ARGS(mm_embed_norm, kMustRead));
       }
     }
@@ -844,7 +900,9 @@ struct WeightsPtrs {
     HWY_ASSERT(config_.vit_config.layer_configs.empty() == vit_layers.empty());
     for (size_t layer_idx = 0; layer_idx < vit_layers.size(); ++layer_idx) {
       HWY_ASSERT(vit_layers[layer_idx].layer_config.type ==
-                 LayerAttentionType::kVit);
+                     LayerAttentionType::kVit ||
+                 vit_layers[layer_idx].layer_config.type ==
+                     LayerAttentionType::kVitGemma4);
       other_layer1 = other1 ? other1->VitLayer(layer_idx) : nullptr;
       other_layer2 = other2 ? other2->VitLayer(layer_idx) : nullptr;
       VitLayer(layer_idx)->ForEachTensor(other_layer1, other_layer2, func);
