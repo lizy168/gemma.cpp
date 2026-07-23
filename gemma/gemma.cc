@@ -220,6 +220,10 @@ static float EmbeddingScaling(size_t model_dim) {
       hwy::ConvertScalarTo<BF16>(sqrtf(static_cast<float>(model_dim))));
 }
 
+static bool HasEmbeddingScaling(const ModelConfig& model_config) {
+  return !(model_config.IsQwen3() || model_config.HasMLA());
+}
+
 // `x_row` indicates which row of `x` to write to.
 // `pos` is the *token*'s position for `AddAbsolutePositionalEmbeddings`, not
 // the start of the batch, because this is called for batches of tokens in
@@ -256,9 +260,9 @@ HWY_NOINLINE size_t EmbedMMToken(int token, size_t x_row, size_t pos,
   }
 
   const size_t model_dim = model_config.model_dim;
-  // DeepSeek does not scale embeddings by sqrt(model_dim).
+  // Qwen3/DeepSeekV4 does not scale embeddings by sqrt(model_dim).
   const float emb_scaling =
-      model_config.HasMLA() ? 1.0f : EmbeddingScaling(model_dim);
+      HasEmbeddingScaling(model_config) ? EmbeddingScaling(model_dim) : 1.0f;
 
   HWY_DASSERT(token >= 0);
   HWY_DASSERT(token < static_cast<int>(model_config.vocab_size));

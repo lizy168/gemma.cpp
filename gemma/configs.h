@@ -273,6 +273,9 @@ enum class Model {
   GEMMA4_26B_MOE,
   GEMMA4_2B,
   DEEPSEEK4_FLASH,
+  QWEN3_600M,
+  QWEN3_2B,  // 1.7B rounded up for readability.
+  QWEN3_4B,
   kSentinel,
 };
 
@@ -630,6 +633,15 @@ struct ModelConfig : public IFields {
       if (lc.IsMLA()) return true;
     }
     return false;
+  }
+
+  bool IsQwen3() const {
+    return model == Model::QWEN3_600M || model == Model::QWEN3_2B ||
+           model == Model::QWEN3_4B;
+  }
+
+  bool HasLmHead() const {
+    return model == Model::QWEN3_600M || model == Model::QWEN3_2B || HasMLA();
   }
 
   // Synthesized config for the multi-token-prediction block (DeepSeek V4):
